@@ -43,6 +43,12 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
+      - name: Configure EAS project
+        working-directory: artifacts/sapqzza-vpn
+        run: eas init --account deniska298819 --non-interactive --force
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
       - name: Build Android APK locally
         working-directory: artifacts/sapqzza-vpn
         run: eas build --platform android --profile preview --non-interactive --local
