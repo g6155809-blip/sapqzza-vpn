@@ -52,6 +52,7 @@
     "react-native-web": "^0.21.0",
     "typescript": "~5.9.2",
     "zod": "catalog:",
-    "zod-validation-error": "^3.4.0"
+    "zod-validation-error": "^3.4.0",
+    "react-native-reanimated": "~3.19.5"
   }
 }
