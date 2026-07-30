@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   FlatList,
@@ -16,7 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useColors } from '@/hooks/useColors';
-import { useAppContext, SERVERS, type Server } from '@/context/AppContext';
+import { useAppContext, type VpnGateServer } from '@/context/AppContext';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function formatBytes(bytes: number): string {
@@ -25,32 +26,38 @@ function formatBytes(bytes: number): string {
 }
 
 function formatTime(sec: number): string {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
+  const h   = Math.floor(sec / 3600);
+  const m   = Math.floor((sec % 3600) / 60);
+  const s   = sec % 60;
   const pad = (n: number) => n.toString().padStart(2, '0');
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
 function maskKey(key: string): string {
   const parts = key.split('-');
-  if (parts.length >= 3) {
-    return `${parts[0]}${'•'.repeat(8)}${parts[parts.length - 1]}`;
-  }
-  if (key.length > 8) return `${key.slice(0, 4)}${'•'.repeat(8)}${key.slice(-4)}`;
+  if (parts.length >= 3) return `${parts[0]}${'•'.repeat(8)}${parts[parts.length - 1]}`;
+  if (key.length > 8)    return `${key.slice(0, 4)}${'•'.repeat(8)}${key.slice(-4)}`;
   return key;
+}
+
+function maskIp(ip: string): string {
+  // Show first octet, mask middle two, show last
+  const parts = ip.split('.');
+  if (parts.length !== 4) return ip;
+  return `${parts[0]}.${parts[1].replace(/./g, '●')}.${parts[2].replace(/./g, '●')}.${parts[3]}`;
 }
 
 // ─── Server list item ────────────────────────────────────────────────────────
 function ServerItem({
   server, isSelected, onSelect, colors,
 }: {
-  server: Server;
+  server: VpnGateServer;
   isSelected: boolean;
   onSelect: () => void;
   colors: ReturnType<typeof useColors>;
 }) {
-  const pingColor =
+  const hasConfig  = !!server.ovpnConfig;
+  const pingColor  =
     server.ping < 80  ? colors.green :
     server.ping < 150 ? '#FFB020'    : colors.destructive;
 
@@ -60,18 +67,24 @@ function ServerItem({
         styles.serverItem,
         {
           backgroundColor: isSelected ? '#1A0D2E' : 'transparent',
-          borderColor:      isSelected ? colors.primary : 'transparent',
+          borderColor:     isSelected ? colors.primary : 'transparent',
           borderWidth: 1.5,
+          opacity: hasConfig ? 1 : 0.5,
         },
       ]}
       onPress={onSelect}
       activeOpacity={0.8}
+      disabled={!hasConfig}
     >
       <Text style={styles.serverItemFlag}>{server.flag}</Text>
       <View style={styles.serverItemInfo}>
-        <Text style={[styles.serverItemCountry, { color: colors.foreground }]}>{server.country}</Text>
+        <Text style={[styles.serverItemCountry, { color: colors.foreground }]}>
+          {server.countryLong}
+        </Text>
         <Text style={[styles.serverItemCity, { color: colors.mutedForeground }]}>
-          {server.city} · {server.region}
+          {hasConfig
+            ? `${server.speedMbps > 0 ? server.speedMbps + ' Мбит/с · ' : ''}${server.sessions > 0 ? server.sessions + ' польз.' : 'Доступен'}`
+            : 'Загружается...'}
         </Text>
       </View>
       <View style={[styles.pingTag, { backgroundColor: pingColor + '28' }]}>
@@ -84,15 +97,39 @@ function ServerItem({
   );
 }
 
+// ─── IP Display Row ──────────────────────────────────────────────────────────
+function IpRow({
+  label, ip, masked, colors,
+}: {
+  label: string;
+  ip: string;
+  masked?: boolean;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View style={styles.ipRow}>
+      <Text style={[styles.ipLabel, { color: colors.mutedForeground }]}>{label}</Text>
+      <Text style={[styles.ipValue, { color: ip === '—' ? colors.mutedForeground : colors.foreground }]}>
+        {ip === '—' ? '—' : masked ? maskIp(ip) : ip}
+      </Text>
+    </View>
+  );
+}
+
 // ─── Main screen ─────────────────────────────────────────────────────────────
 export default function MainVpnScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { vpnStatus, toggleVpn, selectedServer, setSelectedServer, stats, keyData, deleteKey } =
-    useAppContext();
+  const {
+    vpnStatus, toggleVpn,
+    selectedServer, setSelectedServer,
+    servers, serversLoading, serversError, refreshServers,
+    stats, keyData, deleteKey,
+    realIp, vpnIp,
+  } = useAppContext();
 
-  const [showServers, setShowServers]   = useState(false);
-  const [showProfile, setShowProfile]   = useState(false);
+  const [showServers,  setShowServers]  = useState(false);
+  const [showProfile,  setShowProfile]  = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
   const pulse1   = useRef(new Animated.Value(0)).current;
@@ -138,8 +175,10 @@ export default function MainVpnScreen() {
     }
   }, [vpnStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isConnected  = vpnStatus === 'connected';
-  const isConnecting = vpnStatus === 'connecting';
+  const isConnected    = vpnStatus === 'connected';
+  const isConnecting   = vpnStatus === 'connecting';
+  const isDisconnecting = vpnStatus === 'disconnecting';
+  const isBusy         = isConnecting || isDisconnecting;
 
   const handleToggle = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -164,13 +203,24 @@ export default function MainVpnScreen() {
   const pulseOpacity1 = pulse1.interpolate({ inputRange: [0, 1], outputRange: [0.15, 0.55] });
   const pulseOpacity2 = pulse2.interpolate({ inputRange: [0, 1], outputRange: [0.08, 0.30] });
 
+  const statusLabel =
+    isConnected    ? 'Защищено'      :
+    isConnecting   ? 'Подключение...' :
+    isDisconnecting ? 'Отключение...' :
+    'Не защищено';
+
+  const statusColor =
+    isConnected ? colors.green :
+    isBusy      ? '#FFB020'   :
+    colors.mutedForeground;
+
   return (
     <View
       style={[
         styles.root,
         {
           backgroundColor: colors.background,
-          paddingTop:  insets.top  + (Platform.OS === 'web' ? 67 : 0),
+          paddingTop:    insets.top  + (Platform.OS === 'web' ? 67 : 0),
           paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 0),
         },
       ]}
@@ -182,48 +232,51 @@ export default function MainVpnScreen() {
         </Text>
         {isConnected && (
           <View style={[styles.pingBadge, { backgroundColor: colors.green + '22' }]}>
-            <Ionicons name="wifi" size={12} color={colors.green} />
-            <Text style={[styles.pingText, { color: colors.green }]}>{selectedServer.ping} мс</Text>
+            <Ionicons name="shield-checkmark" size={12} color={colors.green} />
+            <Text style={[styles.pingText, { color: colors.green }]}>Защита активна</Text>
           </View>
         )}
       </View>
 
       {/* ── Status ────────────────────────────────────────────────────── */}
       <View style={styles.statusRow}>
-        <View
-          style={[
-            styles.statusDot,
-            { backgroundColor: isConnected ? colors.green : colors.mutedForeground },
-          ]}
-        />
-        <Text
-          style={[
-            styles.statusText,
-            { color: isConnected ? colors.green : colors.mutedForeground },
-          ]}
-        >
-          {isConnected ? 'Подключено' : isConnecting ? 'Подключение...' : 'Отключено'}
+        <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+        <Text style={[styles.statusText, { color: statusColor }]}>
+          {statusLabel}
         </Text>
+      </View>
+
+      {/* ── IP Info Card ──────────────────────────────────────────────── */}
+      <View style={[styles.ipCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <IpRow
+          label="Ваш реальный IP"
+          ip={realIp}
+          masked={isConnected}
+          colors={colors}
+        />
+        {isConnected && (
+          <>
+            <View style={[styles.ipDivider, { backgroundColor: colors.border }]} />
+            <IpRow
+              label="IP через VPN"
+              ip={vpnIp}
+              colors={colors}
+            />
+          </>
+        )}
       </View>
 
       {/* ── Power button ──────────────────────────────────────────────── */}
       <View style={styles.powerArea}>
-        {/* Outer pulse ring */}
-        <Animated.View
-          style={[styles.ring3, { borderColor: colors.primary, opacity: pulseOpacity2 }]}
-        />
-        {/* Middle pulse ring */}
-        <Animated.View
-          style={[styles.ring2, { borderColor: colors.primary, opacity: pulseOpacity1 }]}
-        />
-        {/* Static inner ring */}
+        <Animated.View style={[styles.ring3, { borderColor: colors.primary, opacity: pulseOpacity2 }]} />
+        <Animated.View style={[styles.ring2, { borderColor: colors.primary, opacity: pulseOpacity1 }]} />
         <View
           style={[
             styles.ring1,
             { borderColor: isConnected ? colors.primary + '80' : colors.powerButtonBorder },
           ]}
         >
-          <TouchableOpacity onPress={handleToggle} activeOpacity={0.85}>
+          <TouchableOpacity onPress={handleToggle} activeOpacity={0.85} disabled={isBusy && !isDisconnecting}>
             {isConnected ? (
               <LinearGradient
                 colors={['#E040FB', '#FF4081']}
@@ -231,23 +284,16 @@ export default function MainVpnScreen() {
                 start={{ x: 0.2, y: 0 }}
                 end={{ x: 0.8, y: 1 }}
               >
-                <Animated.View
-                  style={[
-                    styles.btnGlow,
-                    { opacity: glowAnim },
-                  ]}
-                />
+                <Animated.View style={[styles.btnGlow, { opacity: glowAnim }]} />
                 <Ionicons name="power" size={44} color="#FFFFFF" />
               </LinearGradient>
             ) : (
               <View style={[styles.powerBtn, { backgroundColor: colors.powerButtonBg }]}>
-                <Animated.View style={{ opacity: isConnecting ? pulse1 : 1 }}>
-                  <Ionicons
-                    name="power"
-                    size={44}
-                    color={isConnecting ? colors.primary : colors.mutedForeground}
-                  />
-                </Animated.View>
+                {isBusy ? (
+                  <ActivityIndicator size="large" color={colors.primary} />
+                ) : (
+                  <Ionicons name="power" size={44} color={colors.mutedForeground} />
+                )}
               </View>
             )}
           </TouchableOpacity>
@@ -256,11 +302,10 @@ export default function MainVpnScreen() {
 
       {/* ── Label ─────────────────────────────────────────────────────── */}
       <Text style={[styles.connLabel, { color: colors.mutedForeground }]}>
-        {isConnected
-          ? 'Нажмите для отключения'
-          : isConnecting
-          ? 'Подключение...'
-          : 'Нажмите для подключения'}
+        {isConnected     ? 'Нажмите для отключения'  :
+         isConnecting    ? 'Устанавливается туннель...' :
+         isDisconnecting ? 'Завершение подключения...' :
+         'Нажмите для подключения'}
       </Text>
 
       {/* ── Bottom section ────────────────────────────────────────────── */}
@@ -297,16 +342,21 @@ export default function MainVpnScreen() {
           <Text style={styles.serverFlag}>{selectedServer.flag}</Text>
           <View style={styles.serverCardInfo}>
             <Text style={[styles.serverCardCountry, { color: colors.foreground }]}>
-              {selectedServer.country}
+              {selectedServer.countryLong}
             </Text>
             <Text style={[styles.serverCardCity, { color: colors.mutedForeground }]}>
-              {selectedServer.city}
+              {selectedServer.ping} мс
+              {selectedServer.speedMbps > 0 ? ` · ${selectedServer.speedMbps} Мбит/с` : ''}
             </Text>
           </View>
-          <View style={styles.changeRow}>
-            <Text style={[styles.changeText, { color: colors.primary }]}>Сменить</Text>
-            <Ionicons name="chevron-forward" size={15} color={colors.primary} />
-          </View>
+          {serversLoading ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <View style={styles.changeRow}>
+              <Text style={[styles.changeText, { color: colors.primary }]}>Сменить</Text>
+              <Ionicons name="chevron-forward" size={15} color={colors.primary} />
+            </View>
+          )}
         </TouchableOpacity>
 
         {/* Bottom bar */}
@@ -315,7 +365,7 @@ export default function MainVpnScreen() {
             styles.tabBar,
             {
               backgroundColor: colors.card,
-              borderTopColor: colors.border,
+              borderTopColor:  colors.border,
               paddingBottom: insets.bottom > 0 ? insets.bottom : 12,
             },
           ]}
@@ -340,27 +390,36 @@ export default function MainVpnScreen() {
           Server selection modal
       ════════════════════════════════════════════════════════════════ */}
       <Modal visible={showServers} animationType="slide" transparent statusBarTranslucent>
-        <TouchableOpacity
-          style={styles.slideOverlay}
-          activeOpacity={1}
-          onPress={() => setShowServers(false)}
-        />
-        <View
-          style={[
-            styles.serverSheet,
-            { backgroundColor: colors.card, paddingBottom: insets.bottom + 16 },
-          ]}
-        >
+        <TouchableOpacity style={styles.slideOverlay} activeOpacity={1} onPress={() => setShowServers(false)} />
+        <View style={[styles.serverSheet, { backgroundColor: colors.card, paddingBottom: insets.bottom + 16 }]}>
           <View style={[styles.sheetHandle, { backgroundColor: colors.border }]} />
-          <Text style={[styles.sheetTitle, { color: colors.foreground }]}>Выбрать сервер</Text>
+          <View style={styles.sheetHeader}>
+            <Text style={[styles.sheetTitle, { color: colors.foreground }]}>Выбрать сервер</Text>
+            {serversError ? (
+              <TouchableOpacity onPress={refreshServers} style={styles.retryBtn}>
+                <Ionicons name="refresh" size={18} color={colors.primary} />
+                <Text style={[styles.retryText, { color: colors.primary }]}>Обновить</Text>
+              </TouchableOpacity>
+            ) : serversLoading ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <TouchableOpacity onPress={refreshServers} style={styles.retryBtn}>
+                <Ionicons name="refresh" size={16} color={colors.mutedForeground} />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {serversError && (
+            <Text style={[styles.errorText, { color: colors.destructive }]}>{serversError}</Text>
+          )}
+
           <FlatList
-            data={SERVERS}
-            keyExtractor={s => s.id}
-            scrollEnabled={false}
+            data={servers}
+            keyExtractor={s => s.hostname + s.countryShort}
             renderItem={({ item }) => (
               <ServerItem
                 server={item}
-                isSelected={selectedServer.id === item.id}
+                isSelected={selectedServer.countryShort === item.countryShort}
                 colors={colors}
                 onSelect={() => {
                   setSelectedServer(item);
@@ -403,18 +462,14 @@ export default function MainVpnScreen() {
                   <Text style={styles.badgeText}>{keyData?.keyType ?? 'FREE'}</Text>
                 </View>
               </View>
-
               <View style={[styles.rowDivider, { backgroundColor: colors.border }]} />
-
               <View style={styles.profileRow}>
                 <Text style={[styles.profileKey, { color: colors.mutedForeground }]}>Ключ</Text>
                 <Text style={[styles.profileVal, { color: colors.foreground }]}>
                   {keyData ? maskKey(keyData.key) : '—'}
                 </Text>
               </View>
-
               <View style={[styles.rowDivider, { backgroundColor: colors.border }]} />
-
               <View style={styles.profileRow}>
                 <Text style={[styles.profileKey, { color: colors.mutedForeground }]}>Запросы</Text>
                 <Text style={[styles.profileVal, { color: colors.green }]}>
@@ -424,10 +479,7 @@ export default function MainVpnScreen() {
             </View>
 
             <TouchableOpacity
-              style={[
-                styles.deleteBtn,
-                { backgroundColor: colors.destructive + '18', borderColor: colors.destructive },
-              ]}
+              style={[styles.deleteBtn, { backgroundColor: colors.destructive + '18', borderColor: colors.destructive }]}
               onPress={handleDeleteKey}
               activeOpacity={0.8}
             >
@@ -459,20 +511,20 @@ export default function MainVpnScreen() {
                 activeOpacity={0.8}
               >
                 <Feather name="send" size={20} color={colors.primary} />
-                <Text style={[styles.settingsLabel, { color: colors.foreground }]}>
-                  Поддержка в Telegram
-                </Text>
+                <Text style={[styles.settingsLabel, { color: colors.foreground }]}>Поддержка в Telegram</Text>
                 <Feather name="external-link" size={16} color={colors.mutedForeground} />
               </TouchableOpacity>
-
               <View style={[styles.rowDivider, { backgroundColor: colors.border }]} />
-
               <View style={styles.settingsRow}>
                 <Ionicons name="shield-checkmark-outline" size={20} color={colors.primary} />
-                <Text style={[styles.settingsLabel, { color: colors.foreground }]}>
-                  Версия приложения
-                </Text>
-                <Text style={[styles.settingsValue, { color: colors.mutedForeground }]}>1.0.0</Text>
+                <Text style={[styles.settingsLabel, { color: colors.foreground }]}>Версия</Text>
+                <Text style={[styles.settingsValue, { color: colors.mutedForeground }]}>1.1.0</Text>
+              </View>
+              <View style={[styles.rowDivider, { backgroundColor: colors.border }]} />
+              <View style={styles.settingsRow}>
+                <Ionicons name="globe-outline" size={20} color={colors.primary} />
+                <Text style={[styles.settingsLabel, { color: colors.foreground }]}>VPN-серверы</Text>
+                <Text style={[styles.settingsValue, { color: colors.mutedForeground }]}>VPNGate</Text>
               </View>
             </View>
           </View>
@@ -485,7 +537,6 @@ export default function MainVpnScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
 
-  // Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -493,78 +544,42 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 10,
   },
-  appTitle: {
-    fontSize: 22,
-    fontFamily: 'Inter_700Bold',
-    letterSpacing: 1.5,
-  },
-  pingBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 20,
-  },
-  pingText: { fontSize: 13, fontFamily: 'Inter_600SemiBold' },
+  appTitle:   { fontSize: 22, fontFamily: 'Inter_700Bold', letterSpacing: 1.5 },
+  pingBadge:  { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20 },
+  pingText:   { fontSize: 13, fontFamily: 'Inter_600SemiBold' },
 
-  // Status
-  statusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    gap: 8,
-    marginBottom: 6,
-  },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  statusRow:  { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 24, gap: 8, marginBottom: 8 },
+  statusDot:  { width: 8, height: 8, borderRadius: 4 },
   statusText: { fontSize: 14, fontFamily: 'Inter_500Medium' },
+
+  // IP Card
+  ipCard: {
+    marginHorizontal: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginBottom: 4,
+  },
+  ipRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  ipLabel:   { fontSize: 13, fontFamily: 'Inter_400Regular' },
+  ipValue:   { fontSize: 13, fontFamily: 'Inter_600SemiBold', letterSpacing: 0.5 },
+  ipDivider: { height: 1, marginVertical: 2 },
 
   // Power button
   powerArea: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  ring3: {
-    position: 'absolute',
-    width: 272,
-    height: 272,
-    borderRadius: 136,
-    borderWidth: 1,
-  },
-  ring2: {
-    position: 'absolute',
-    width: 212,
-    height: 212,
-    borderRadius: 106,
-    borderWidth: 1.5,
-  },
-  ring1: {
-    width: 164,
-    height: 164,
-    borderRadius: 82,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  powerBtn: {
-    width: 124,
-    height: 124,
-    borderRadius: 62,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  btnGlow: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    borderRadius: 62,
-    backgroundColor: 'rgba(224,64,251,0.25)',
-  },
+  ring3: { position: 'absolute', width: 272, height: 272, borderRadius: 136, borderWidth: 1 },
+  ring2: { position: 'absolute', width: 212, height: 212, borderRadius: 106, borderWidth: 1.5 },
+  ring1: { width: 164, height: 164, borderRadius: 82, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  powerBtn: { width: 124, height: 124, borderRadius: 62, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  btnGlow: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 62, backgroundColor: 'rgba(224,64,251,0.25)' },
 
-  // Label
-  connLabel: {
-    textAlign: 'center',
-    fontSize: 15,
-    fontFamily: 'Inter_400Regular',
-    marginVertical: 16,
-  },
+  connLabel: { textAlign: 'center', fontSize: 15, fontFamily: 'Inter_400Regular', marginVertical: 16 },
 
   // Bottom
   bottomSection: { gap: 10, paddingHorizontal: 14 },
@@ -577,9 +592,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-around',
   },
-  statCol: { alignItems: 'center', gap: 4, flex: 1 },
-  statVal: { fontSize: 15, fontFamily: 'Inter_700Bold' },
-  statLbl: { fontSize: 11, fontFamily: 'Inter_400Regular' },
+  statCol:     { alignItems: 'center', gap: 4, flex: 1 },
+  statVal:     { fontSize: 15, fontFamily: 'Inter_700Bold' },
+  statLbl:     { fontSize: 11, fontFamily: 'Inter_400Regular' },
   statDivider: { width: 1, height: 36 },
 
   serverCard: {
@@ -591,11 +606,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     gap: 12,
   },
-  serverFlag: { fontSize: 28 },
-  serverCardInfo: { flex: 1 },
+  serverFlag:        { fontSize: 28 },
+  serverCardInfo:    { flex: 1 },
   serverCardCountry: { fontSize: 16, fontFamily: 'Inter_600SemiBold' },
-  serverCardCity: { fontSize: 13, fontFamily: 'Inter_400Regular' },
-  changeRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  serverCardCity:    { fontSize: 13, fontFamily: 'Inter_400Regular' },
+  changeRow:  { flexDirection: 'row', alignItems: 'center', gap: 2 },
   changeText: { fontSize: 14, fontFamily: 'Inter_500Medium' },
 
   tabBar: {
@@ -606,30 +621,20 @@ const styles = StyleSheet.create({
     marginHorizontal: -14,
     paddingHorizontal: 40,
   },
-  tabBtn: { alignItems: 'center', gap: 6 },
-  tabIcon: { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center' },
+  tabBtn:   { alignItems: 'center', gap: 6 },
+  tabIcon:  { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center' },
   tabLabel: { fontSize: 12, fontFamily: 'Inter_400Regular' },
 
-  // ── Modals ────────────────────────────────────────────────────────
+  // Modals
   slideOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)' },
-  serverSheet: {
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    padding: 16,
-    paddingTop: 10,
-  },
-  sheetHandle: {
-    width: 42,
-    height: 4,
-    borderRadius: 2,
-    alignSelf: 'center',
-    marginBottom: 16,
-  },
-  sheetTitle: {
-    fontSize: 20,
-    fontFamily: 'Inter_700Bold',
-    marginBottom: 14,
-  },
+  serverSheet: { borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 16, paddingTop: 10, maxHeight: '80%' },
+  sheetHandle: { width: 42, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  sheetTitle:  { fontSize: 20, fontFamily: 'Inter_700Bold' },
+  retryBtn:    { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  retryText:   { fontSize: 14, fontFamily: 'Inter_500Medium' },
+  errorText:   { fontSize: 13, fontFamily: 'Inter_400Regular', marginBottom: 10, paddingHorizontal: 4 },
+
   serverItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -639,11 +644,11 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     gap: 10,
   },
-  serverItemFlag: { fontSize: 28 },
-  serverItemInfo: { flex: 1 },
+  serverItemFlag:    { fontSize: 28 },
+  serverItemInfo:    { flex: 1 },
   serverItemCountry: { fontSize: 16, fontFamily: 'Inter_600SemiBold' },
-  serverItemCity: { fontSize: 13, fontFamily: 'Inter_400Regular' },
-  pingTag: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  serverItemCity:    { fontSize: 13, fontFamily: 'Inter_400Regular' },
+  pingTag:     { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   pingTagText: { fontSize: 13, fontFamily: 'Inter_600SemiBold' },
 
   centerOverlay: {
@@ -653,34 +658,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 24,
   },
-  profileCard: {
-    width: '100%',
-    borderRadius: 22,
-    padding: 22,
-    paddingTop: 18,
-    alignItems: 'center',
-    gap: 14,
-  },
-  closeBtn: { position: 'absolute', top: 16, right: 16, zIndex: 10 },
-  avatar: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  profileCard: { width: '100%', borderRadius: 22, padding: 22, paddingTop: 18, alignItems: 'center', gap: 14 },
+  closeBtn:    { position: 'absolute', top: 16, right: 16, zIndex: 10 },
+  avatar:      { width: 68, height: 68, borderRadius: 34, alignItems: 'center', justifyContent: 'center' },
   profileRows: { width: '100%', gap: 2 },
-  profileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-  },
-  profileKey: { fontSize: 14, fontFamily: 'Inter_400Regular' },
-  profileVal: { fontSize: 14, fontFamily: 'Inter_500Medium', letterSpacing: 1.5 },
-  badge: { paddingHorizontal: 14, paddingVertical: 5, borderRadius: 20 },
-  badgeText: { color: '#FFFFFF', fontSize: 12, fontFamily: 'Inter_700Bold', letterSpacing: 0.5 },
-  rowDivider: { height: 1 },
+  profileRow:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12 },
+  profileKey:  { fontSize: 14, fontFamily: 'Inter_400Regular' },
+  profileVal:  { fontSize: 14, fontFamily: 'Inter_500Medium', letterSpacing: 1.5 },
+  badge:       { paddingHorizontal: 14, paddingVertical: 5, borderRadius: 20 },
+  badgeText:   { color: '#FFFFFF', fontSize: 12, fontFamily: 'Inter_700Bold', letterSpacing: 0.5 },
+  rowDivider:  { height: 1 },
   deleteBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -693,20 +680,9 @@ const styles = StyleSheet.create({
   },
   deleteBtnText: { fontSize: 15, fontFamily: 'Inter_600SemiBold' },
 
-  settingsCard: {
-    width: '100%',
-    borderRadius: 22,
-    padding: 22,
-    paddingTop: 18,
-    gap: 14,
-  },
+  settingsCard: { width: '100%', borderRadius: 22, padding: 22, paddingTop: 18, gap: 14 },
   settingsRows: { gap: 0 },
-  settingsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 14,
-  },
-  settingsLabel: { flex: 1, fontSize: 15, fontFamily: 'Inter_400Regular' },
-  settingsValue: { fontSize: 14, fontFamily: 'Inter_500Medium' },
+  settingsRow:  { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 },
+  settingsLabel:{ flex: 1, fontSize: 15, fontFamily: 'Inter_400Regular' },
+  settingsValue:{ fontSize: 14, fontFamily: 'Inter_500Medium' },
 });
