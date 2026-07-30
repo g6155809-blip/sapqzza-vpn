@@ -5,11 +5,11 @@
  *   1. Uses `apply plugin: 'maven'` — removed in Gradle 7+
  *   2. Does not declare `compileSdk` — required by AGP 8.x
  *
- * This plugin fixes both issues during `expo prebuild` so EAS managed
- * workflow can compile the native module.
+ * NOTE: import via 'expo/config-plugins' (not '@expo/config-plugins')
+ * so pnpm resolves it through the already-installed `expo` package.
  */
 
-const { withDangerousMod } = require('@expo/config-plugins');
+const { withDangerousMod } = require('expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
@@ -40,18 +40,15 @@ const withOpenVpnFix = (config) => {
       let content = fs.readFileSync(buildGradlePath, 'utf8');
 
       // Fix 1: Remove the 'maven' plugin (not available in Gradle 7+)
-      // It was only needed for old local maven publishing; safe to remove.
       content = content.replace(
         /^\s*apply\s+plugin:\s+['"]maven['"]\s*\n?/gm,
         ''
       );
 
       // Fix 2: Replace compileSdkVersion with compileSdk (required by AGP 8.x)
-      // If neither exists, inject compileSdk 35 after `android {`
-      content = content.replace(
-        /\bcompileSdkVersion\s+/g,
-        'compileSdk '
-      );
+      content = content.replace(/\bcompileSdkVersion\s+/g, 'compileSdk ');
+
+      // Fix 3: If neither exists, inject compileSdk 35 after `android {`
       if (!/\bcompileSdk\s/.test(content)) {
         content = content.replace(
           /\bandroid\s*\{/,
