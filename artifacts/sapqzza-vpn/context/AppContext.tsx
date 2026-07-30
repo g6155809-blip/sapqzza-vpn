@@ -15,30 +15,23 @@ import { fetchRealIp } from '@/services/realip';
 export type Server = VpnGateServer;
 export type { VpnGateServer };
 
-// ─── Fallback static servers (shown while VPNGate loads) ───────────────────
-export const SERVERS: VpnGateServer[] = [
-  { hostname: 'nl', ip: '', score: 999, ping: 45,  speedMbps: 50, countryLong: 'Нидерланды',     countryShort: 'NL', flag: '🇳🇱', sessions: 0, logType: '', ovpnConfig: '' },
-  { hostname: 'de', ip: '', score: 998, ping: 55,  speedMbps: 45, countryLong: 'Германия',        countryShort: 'DE', flag: '🇩🇪', sessions: 0, logType: '', ovpnConfig: '' },
-  { hostname: 'us', ip: '', score: 997, ping: 120, speedMbps: 40, countryLong: 'США',             countryShort: 'US', flag: '🇺🇸', sessions: 0, logType: '', ovpnConfig: '' },
-  { hostname: 'jp', ip: '', score: 996, ping: 95,  speedMbps: 60, countryLong: 'Япония',          countryShort: 'JP', flag: '🇯🇵', sessions: 0, logType: '', ovpnConfig: '' },
-  { hostname: 'sg', ip: '', score: 995, ping: 150, speedMbps: 30, countryLong: 'Сингапур',        countryShort: 'SG', flag: '🇸🇬', sessions: 0, logType: '', ovpnConfig: '' },
-  { hostname: 'gb', ip: '', score: 994, ping: 75,  speedMbps: 35, countryLong: 'Великобритания',  countryShort: 'GB', flag: '🇬🇧', sessions: 0, logType: '', ovpnConfig: '' },
-  { hostname: 'fr', ip: '', score: 993, ping: 65,  speedMbps: 42, countryLong: 'Франция',         countryShort: 'FR', flag: '🇫🇷', sessions: 0, logType: '', ovpnConfig: '' },
-  { hostname: 'kr', ip: '', score: 992, ping: 85,  speedMbps: 55, countryLong: 'Южная Корея',     countryShort: 'KR', flag: '🇰🇷', sessions: 0, logType: '', ovpnConfig: '' },
-];
+// ─── No static fallback — only real VPNGate servers are shown ───────────────
+export const SERVERS: VpnGateServer[] = [];
 
-// ─── Valid keys ─────────────────────────────────────────────────────────────
+// ─── Valid keys (all free, unlimited) ───────────────────────────────────────
+const FREE = { keyType: 'FREE', requests: 'Навсегда' } as const;
 const VALID_KEYS: Record<string, { keyType: string; requests: string }> = {
-  'SAPQZZA-2026-PREM': { keyType: 'PREMIUM', requests: 'Безлимит' },
-  'NEWO-SAPQ-2026':    { keyType: 'PREMIUM', requests: 'Безлимит' },
-  'SAPVPN-PREM-001':   { keyType: 'PREMIUM', requests: 'Безлимит' },
-  'SAPVPN-PREM-002':   { keyType: 'PREMIUM', requests: 'Безлимит' },
-  'SAPVPN-PREM-003':   { keyType: 'PREMIUM', requests: 'Безлимит' },
-  'SAPVPN-PREM-004':   { keyType: 'PREMIUM', requests: 'Безлимит' },
-  'SAPVPN-PREM-005':   { keyType: 'PREMIUM', requests: 'Безлимит' },
-  'SAPVPN-FREE-001':   { keyType: 'FREE',    requests: '100' },
-  'SAPVPN-FREE-002':   { keyType: 'FREE',    requests: '100' },
-  'SAPVPN-FREE-003':   { keyType: 'FREE',    requests: '100' },
+  'NEWORS-SAPQZZA_2026': FREE,
+  'SAPQZZA-2026-PREM':   FREE,
+  'NEWO-SAPQ-2026':      FREE,
+  'SAPVPN-PREM-001':     FREE,
+  'SAPVPN-PREM-002':     FREE,
+  'SAPVPN-PREM-003':     FREE,
+  'SAPVPN-PREM-004':     FREE,
+  'SAPVPN-PREM-005':     FREE,
+  'SAPVPN-FREE-001':     FREE,
+  'SAPVPN-FREE-002':     FREE,
+  'SAPVPN-FREE-003':     FREE,
 };
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -65,7 +58,7 @@ interface AppContextValue {
   vpnStatus: VpnStatus;
   toggleVpn: () => void;
 
-  selectedServer: VpnGateServer;
+  selectedServer: VpnGateServer | null;
   setSelectedServer: (s: VpnGateServer) => void;
 
   servers: VpnGateServer[];
@@ -115,7 +108,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [servers,        setServers]        = useState<VpnGateServer[]>(SERVERS);
   const [serversLoading, setServersLoading] = useState(false);
   const [serversError,   setServersError]   = useState<string | null>(null);
-  const [selectedServer, setServerState]    = useState<VpnGateServer>(SERVERS[0]);
+  const [selectedServer, setServerState]    = useState<VpnGateServer | null>(null);
   const [stats,          setStats]          = useState<Stats>({ download: 0, upload: 0, seconds: 0 });
   const [realIp,         setRealIp]         = useState('—');
   const [vpnIp,          setVpnIp]          = useState('—');
@@ -137,11 +130,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const storedKey     = await AsyncStorage.getItem(SK.KEY_DATA);
         const storedCountry = await AsyncStorage.getItem(SK.COUNTRY);
         setKeyData(storedKey ? (JSON.parse(storedKey) as KeyData) : null);
-        if (storedCountry) {
-          // Will be updated once VPNGate servers load
-          const fallback = SERVERS.find(s => s.countryShort === storedCountry);
-          if (fallback) setServerState(fallback);
-        }
+        // Country preference restored when VPNGate servers load
       } catch {
         setKeyData(null);
       }
@@ -157,16 +146,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const grouped = groupByCountry(all);
       setServers(grouped);
 
-      // Restore country preference
+      // Restore country preference, or auto-select best server
       const storedCountry = await AsyncStorage.getItem(SK.COUNTRY);
       if (storedCountry) {
         const best = grouped.find(s => s.countryShort === storedCountry);
-        if (best) setServerState(best);
+        setServerState(best ?? grouped[0] ?? null);
+      } else if (grouped.length > 0) {
+        setServerState(prev => prev ?? grouped[0]);
       }
     } catch (e: any) {
       console.log('[VPN] VPNGate load error:', e?.message);
       setServersError('Не удалось загрузить серверы. Проверьте интернет.');
-      // Keep fallback static servers
     } finally {
       setServersLoading(false);
     }
@@ -284,7 +274,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     if (vpnStatus === 'disconnecting') return;
 
-    if (!selectedServer.ovpnConfig) {
+    if (!selectedServer || !selectedServer.ovpnConfig) {
       Alert.alert(
         'Серверы загружаются',
         'Подождите, пока список серверов VPN загрузится, или выберите другой сервер.',
@@ -292,6 +282,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
       return;
     }
+
+    const serverSnapshot = selectedServer; // capture for async closure
 
     const doConnect = async () => {
       setVpnStatus('connecting');
@@ -301,11 +293,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           await OpenVPN.prepare?.();
           await OpenVPN.connect({
             ovpnFileName:      'sapqzza',
-            ovpnString:        selectedServer.ovpnConfig,
+            ovpnString:        serverSnapshot.ovpnConfig,
             username:          '',
             password:          '',
-            notificationTitle: 'SAPQZZA VPN',
-            notificationText:  `Подключено — ${selectedServer.countryLong}`,
+            // Foreground service notification — keeps VPN alive 24/7
+            notificationTitle: 'SAPQZZA VPN — Защита активна',
+            notificationText:  `${serverSnapshot.countryLong} · ${serverSnapshot.ping} мс`,
+            // Reconnect automatically if connection drops
+            reconnectOnNetworkChange: true,
           });
           // State will be updated via DeviceEventEmitter
         } else {
@@ -326,7 +321,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     Alert.alert(
       'Подключение VPN',
-      `Подключиться к ${selectedServer.countryLong}?\n\nВаш IP будет изменён на IP сервера.`,
+      `Подключиться к ${serverSnapshot.countryLong}?\n\nВаш IP будет изменён на IP сервера.`,
       [
         { text: 'Отмена', style: 'cancel' },
         { text: 'Подключить', onPress: doConnect },

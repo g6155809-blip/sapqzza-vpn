@@ -128,6 +128,8 @@ export default function MainVpnScreen() {
     realIp, vpnIp,
   } = useAppContext();
 
+  const hasServer = !!selectedServer;
+
   const [showServers,  setShowServers]  = useState(false);
   const [showProfile,  setShowProfile]  = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -339,14 +341,15 @@ export default function MainVpnScreen() {
           onPress={() => setShowServers(true)}
           activeOpacity={0.8}
         >
-          <Text style={styles.serverFlag}>{selectedServer.flag}</Text>
+          <Text style={styles.serverFlag}>{selectedServer?.flag ?? '🌐'}</Text>
           <View style={styles.serverCardInfo}>
             <Text style={[styles.serverCardCountry, { color: colors.foreground }]}>
-              {selectedServer.countryLong}
+              {selectedServer?.countryLong ?? 'Выберите сервер'}
             </Text>
             <Text style={[styles.serverCardCity, { color: colors.mutedForeground }]}>
-              {selectedServer.ping} мс
-              {selectedServer.speedMbps > 0 ? ` · ${selectedServer.speedMbps} Мбит/с` : ''}
+              {selectedServer
+                ? `${selectedServer.ping} мс${selectedServer.speedMbps > 0 ? ` · ${selectedServer.speedMbps} Мбит/с` : ''}`
+                : 'Загрузка серверов...'}
             </Text>
           </View>
           {serversLoading ? (
@@ -419,7 +422,7 @@ export default function MainVpnScreen() {
             renderItem={({ item }) => (
               <ServerItem
                 server={item}
-                isSelected={selectedServer.countryShort === item.countryShort}
+                isSelected={selectedServer?.countryShort === item.countryShort}
                 colors={colors}
                 onSelect={() => {
                   setSelectedServer(item);

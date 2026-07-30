@@ -90,7 +90,7 @@ export default function KeyEntryScreen() {
             ]}
             value={key}
             onChangeText={t => { setKey(t); setError(''); }}
-            placeholder="SAPQZZA-2026-PREM"
+            placeholder="Введите ключ доступа"
             placeholderTextColor={colors.mutedForeground}
             autoCapitalize="characters"
             autoCorrect={false}
